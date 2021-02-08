@@ -1,6 +1,6 @@
 ![][header]
 
-[header]: https://github.com/AmiraSamirSoliman/CloudFourmation/blob/main/header.png "Header"
+[header]: https://github.com/AmiraSamirSoliman/CloudFormation/blob/main/header.png "Header"
 
 <br>
 
@@ -42,7 +42,7 @@ Infrastructure-as-code (IAC) that automates the process of creating a secured an
 
 ![alt text][architecture]
 
-[architecture]: https://github.com/AmiraSamirSoliman/CloudFourmation/blob/main/High%20Availability%20Web%20ApplicationV2.png "Architecture Diagram"
+[architecture]: https://github.com/AmiraSamirSoliman/CloudFormation/blob/main/High%20Availability%20Web%20ApplicationV2.png "Architecture Diagram"
 
 <br>
 
