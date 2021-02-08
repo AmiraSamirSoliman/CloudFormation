@@ -256,4 +256,3 @@ Outputs:
     Value: !Ref PrivateSubnet2
     Export:
       Name: !Sub ${ProjectName}-PRIV-SN-2
-      
