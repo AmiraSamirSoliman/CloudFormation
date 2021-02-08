@@ -1,80 +1,271 @@
-# This workflow will build and push a new container image to Amazon ECR,
-# and then will deploy a new task definition to Amazon ECS, when a release is created
-#
-# To use this workflow, you will need to complete the following set-up steps:
-#
-# 1. Create an ECR repository to store your images.
-#    For example: `aws ecr create-repository --repository-name my-ecr-repo --region us-east-2`.
-#    Replace the value of `ECR_REPOSITORY` in the workflow below with your repository's name.
-#    Replace the value of `aws-region` in the workflow below with your repository's region.
-#
-# 2. Create an ECS task definition, an ECS cluster, and an ECS service.
-#    For example, follow the Getting Started guide on the ECS console:
-#      https://us-east-2.console.aws.amazon.com/ecs/home?region=us-east-2#/firstRun
-#    Replace the values for `service` and `cluster` in the workflow below with your service and cluster names.
-#
-# 3. Store your ECS task definition as a JSON file in your repository.
-#    The format should follow the output of `aws ecs register-task-definition --generate-cli-skeleton`.
-#    Replace the value of `task-definition` in the workflow below with your JSON file's name.
-#    Replace the value of `container-name` in the workflow below with the name of the container
-#    in the `containerDefinitions` section of the task definition.
-#
-# 4. Store an IAM user access key in GitHub Actions secrets named `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`.
-#    See the documentation for each action used below for the recommended IAM policies for this IAM user,
-#    and best practices on handling the access key credentials.
+Description: >
+  Server, security, and load-balance configurations.
 
-on:
-  release:
-    types: [created]
+Parameters:
+  ProjectName:
+    Description: Project name prefixed to resource names.
+    Type: String
 
-name: Deploy to Amazon ECS
+  WebAppServersMinSize:
+    Description: Minimum number of web application servers
+    Type: String
+    Default: '2'
 
-jobs:
-  deploy:
-    name: Deploy
-    runs-on: ubuntu-latest
+  WebAppServersMaxSize:
+    Description: Maximum number of web application servers
+    Type: String
+    Default: '4'
 
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v2
+  WebAppServersDesiredCapacity:
+    Description: Desired initial number of web application servers
+    Type: String
+    Default: '4'
 
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v1
-      with:
-        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        aws-region: us-east-2
+  S3CodeRepo:
+    Description: Full S3 path and file name of zipped file
+    Type: String
+    Default: 's3://udacity-s3/devops/udacity.zip'
 
-    - name: Login to Amazon ECR
-      id: login-ecr
-      uses: aws-actions/amazon-ecr-login@v1
+  KeyPairName:
+    Description: Name of key-pair (PEM) file.
+    Type: String
+    Default: 'udacity-dev-ops'
 
-    - name: Build, tag, and push image to Amazon ECR
-      id: build-image
-      env:
-        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: my-ecr-repo
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        # Build a docker container and
-        # push it to ECR so that it can
-        # be deployed to ECS.
-        docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-        docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-        echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 
-    - name: Fill in the new image ID in the Amazon ECS task definition
-      id: task-def
-      uses: aws-actions/amazon-ecs-render-task-definition@v1
-      with:
-        task-definition: task-definition.json
-        container-name: sample-app
-        image: ${{ steps.build-image.outputs.image }}
+Resources:
+  SecurityGroupLoadBalancer:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for load-balancer
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VPCID"
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+        CidrIp: 0.0.0.0/0
 
-    - name: Deploy Amazon ECS task definition
-      uses: aws-actions/amazon-ecs-deploy-task-definition@v1
-      with:
-        task-definition: ${{ steps.task-def.outputs.task-definition }}
-        service: sample-app-service
-        cluster: default
-        wait-for-service-stability: true
+  SecurityGroupWebServer:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for web server
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VPCID"
+      SecurityGroupIngress:
+      - SourceSecurityGroupId: !Ref SecurityGroupLoadBalancer
+        IpProtocol: tcp
+        FromPort: 80
+        ToPort: 80
+      - SourceSecurityGroupId: !Ref SecurityGroupBastion
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+
+  SecurityGroupBastion:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for bastion server
+      VpcId:
+        Fn::ImportValue: !Sub "${ProjectName}-VPCID"
+      SecurityGroupIngress:
+      - CidrIp: 0.0.0.0/0
+        IpProtocol: tcp
+        FromPort: 22
+        ToPort: 22
+      Tags:
+        - Key: Name
+          Value: !Sub "${ProjectName} Bastion Security Group"
+
+  WebAppLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          sudo apt update -y
+          sudo apt install unzip awscli -y
+          mkdir html
+          aws s3 cp ${S3CodeRepo} html
+          unzip -o html/udacity.zip -d html
+          sudo chown -R www-data:www-data html
+          apt-get -y install apt-transport-https ca-certificates curl gnupg-agent software-properties-common
+          curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+          sudo apt-key fingerprint 0EBFCD88
+          sudo add-apt-repository \
+            "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) \
+            stable"
+          apt-get update
+          apt-get -y install docker-ce docker-ce-cli containerd.io
+          usermod -aG docker ubuntu
+          docker run -dit --name ${ProjectName} -p 80:80 -v "$PWD"/html:/usr/local/apache2/htdocs/ httpd:latest
+      ImageId: ami-005bdb005fb00e791
+      IamInstanceProfile: !Ref ListBucketInstanceProfile
+      SecurityGroups: 
+      - Ref: SecurityGroupWebServer  
+      InstanceType: t3.medium
+      BlockDeviceMappings:
+      - DeviceName: "/dev/sdk"
+        Ebs:
+          VolumeSize: "10"
+  
+  WebAppTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      HealthCheckIntervalSeconds: 10
+      HealthCheckPath: /
+      HealthCheckProtocol: HTTP
+      HealthCheckTimeoutSeconds: 8
+      HealthyThresholdCount: 2
+      Port: 80
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId:
+        Fn::ImportValue: 
+          Fn::Sub: "${ProjectName}-VPCID"
+
+  WebAppGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+      - Fn::ImportValue: !Sub "${ProjectName}-PRIV-NETS"
+      LaunchConfigurationName: !Ref WebAppLaunchConfig
+      DesiredCapacity: !Ref WebAppServersDesiredCapacity
+      MinSize: !Ref WebAppServersMinSize
+      MaxSize: !Ref WebAppServersMaxSize
+      MetricsCollection:
+        - Granularity: "1Minute"
+          Metrics:
+            - "GroupMinSize"
+            - "GroupMaxSize"
+      TargetGroupARNs:
+      - Ref: "WebAppTargetGroup"
+
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Subnets:
+      - Fn::ImportValue: !Sub "${ProjectName}-PUB-SN-1"
+      - Fn::ImportValue: !Sub "${ProjectName}-PUB-SN-2"
+      SecurityGroups:
+      - Ref: SecurityGroupLoadBalancer
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      DefaultActions:
+      - Type: "forward"
+        TargetGroupArn: !Ref WebAppTargetGroup
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: "80"
+      Protocol: "HTTP"
+
+  ALBListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      Actions:
+      - Type: "forward"
+        TargetGroupArn: !Ref WebAppTargetGroup
+      Conditions:
+      - Field: "path-pattern"
+        Values: ["/"]
+      ListenerArn: !Ref Listener
+      Priority: "1"
+
+  BastionPublicSubnet1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-06f2f779464715dc5
+      InstanceType: t2.micro
+      KeyName: !Ref KeyPairName
+      SubnetId:
+        Fn::ImportValue: 
+          Fn::Sub: "${ProjectName}-PUB-SN-1"
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      SecurityGroupIds:
+        - Ref: SecurityGroupBastion
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Bastion Host 1
+
+  BastionPublicSubnet2:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: ami-06f2f779464715dc5
+      InstanceType: t2.micro
+      KeyName: !Ref KeyPairName
+      SubnetId:
+        Fn::ImportValue: 
+          Fn::Sub: "${ProjectName}-PUB-SN-2"
+      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      SecurityGroupIds:
+        - Ref: SecurityGroupBastion
+      Tags:
+        - Key: Name
+          Value: !Sub ${ProjectName} Bastion Host 2
+
+  ListBucketInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: "/"
+      Roles:
+      - Ref: S3BucketRole
+
+  S3BucketRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - ec2.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Path: "/"
+
+  S3BucketsPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: S3BucketsPolicy
+      PolicyDocument:
+        Statement:
+        - Effect: Allow
+          Action:
+          - s3:List*
+          Resource: "*"
+      Roles:
+      - Ref: S3BucketRole
+
+
+Outputs:
+  LoadBalancerDNSName:
+    Description: DNS Name of the web application
+    Value: !Join [ "", [ "http://", !GetAtt LoadBalancer.DNSName ] ]
+    Export:
+      Name: !Sub "${ProjectName}-DNS-NAME"
+
+  BastionHostIPPublicSubnet1:
+    Description: IP address of bastion host in public subnet 1 
+    Value: !GetAtt BastionPublicSubnet1.PublicIp
+    Export:
+      Name: !Sub "${ProjectName}-BASTION-HOST-IP-PUB-SN-1"
+
+  BastionHostIPPublicSubnet2:
+    Description: IP address of bastion host in public subnet 2 
+    Value: !GetAtt BastionPublicSubnet2.PublicIp
+    Export:
+      Name: !Sub "${ProjectName}-BASTION-HOST-IP-PUB-SN-2"
+
+  BastionHostDNSPublicSubnet1:
+    Description: DNS address of bastion host in public subnet 1
+    Value: !GetAtt BastionPublicSubnet1.PublicDnsName
+    Export:
+      Name: !Sub "${ProjectName}-BASTION-HOST-DNS-PUB-SN-1"
+
+  BastionHostDNSPublicSubnet2:
+    Description: DNS address of bastion host in public subnet 2
+    Value: !GetAtt BastionPublicSubnet2.PublicDnsName
+    Export:
+      Name: !Sub "${ProjectName}-BASTION-HOST-DNS-PUB-SN-2"
