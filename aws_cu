@@ -34,7 +34,7 @@ else
 fi
 
 
-##### check if stack exist
+###### check if stack exist
 aws cloudformation describe-stacks --stack-name $stack_name > /dev/null 2>&1
 response=$?
 if [ $response -eq 255 ]
