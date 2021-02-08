@@ -238,7 +238,6 @@ Resources:
       Roles:
       - Ref: S3BucketRole
 
-
 Outputs:
   LoadBalancerDNSName:
     Description: DNS Name of the web application
